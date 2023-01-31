@@ -362,7 +362,32 @@ static RD_INLINE RD_UNUSED int rd_kafkap_str_cmp_str2 (const char *str,
                 return RD_CMP(len, b->len);
 }
 
-
+static RD_INLINE RD_UNUSED int
+rd_kafka_str_member_is_replicate (const char *str1, const char *str2){
+        int len1 = (int)strlen(str1);
+        int len2 = (int)strlen(str2);
+        // Because member ID is consist of clientID + UUID(static length: 37), so needn't compare with the UUID.
+        int minlen = RD_MIN(len1, len2) - 37;
+        int count_underline = 0;
+        int count_minus = 0;
+        for(int i = 0; i < minlen; i++)
+        {
+                if(str1[i] != str2[i])
+                {
+                        if (count_underline == 1 && count_minus == 3)
+                                return 1;
+                        break;
+                }
+                else
+                {
+                        if (str1[i] == '_')
+                                ++count_underline;
+                        if (str1[i] == '-')
+                                ++count_minus;
+                }
+        }
+        return 0;
+}
 
 /**
  *
