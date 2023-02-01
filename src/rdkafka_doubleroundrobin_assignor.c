@@ -60,39 +60,75 @@ rd_kafka_doubleroundrobin_assignor_assign_cb (rd_kafka_t *rk,
                                             char *errstr, size_t errstr_size,
                                             void *opaque) {
     unsigned int ti;
+
     /* The range assignor works on a per-topic basis. */
     for (ti = 0 ; ti < eligible_topic_cnt ; ti++)
     {
         rd_kafka_assignor_topic_t * eligible_topic = eligible_topics[ti];
-        int recount_member = 0;
+        int recount_member = 1;
 
         /* For each topic, we lay out the available partitions in
             * numeric order and the consumers in lexicographic order. */
-        rd_list_sort(&eligible_topic->members, rd_kafka_group_member_cmp);
+        qsort(members, member_cnt, sizeof(*members),
+              rd_kafka_group_member_cmp);
 
         int member_cnt = rd_list_cnt(&eligible_topic->members);
-        int non_duplicate_members_pos[member_cnt];
+        int non_duplicate_members_pos[member_cnt + 1];
+        non_duplicate_members_pos[0] = -1;
 
         for (int i = 0; i < member_cnt - 1; ++i)
         {
             if (rd_kafka_str_member_is_replicate(members[i].rkgm_member_id->str, members[i + 1].rkgm_member_id->str) == 1)
-                printf("current member %s is duplicate.", members[i + 1].rkgm_member_id->str);
+                rd_kafka_dbg(rk, CGRP, "ASSIGN", "current member %s is duplicate.", members[i + 1].rkgm_member_id->str);
             else
                 non_duplicate_members_pos[recount_member++] = i;
         }
-        non_duplicate_members_pos[recount_member++] = member_cnt - 1;
+        non_duplicate_members_pos[recount_member] = member_cnt - 1;
 
-        printf("reserved members has : %d consumers\n", recount_member);
         int next = -1;
+
+        /// This array saves every consumer's size, for example:
+        /// non_duplicate_members_pos = {-1, 3, 6, 8}
+        /// group0 = {0, 1, 2, 3} --> size = 4
+        /// group1 = {4, 5, 6} --> size = 3
+        /// group2 = {7, 8} --> size = 2
+        int sizeof_member_group[recount_member];
+        for (int group_id = 0; group_id < recount_member; ++group_id)
+        {
+            sizeof_member_group[group_id] = non_duplicate_members_pos[group_id + 1] - non_duplicate_members_pos[group_id];
+        }
+
+        /// This array saves status in every consumer's attribution, for example:
+        /// next_in_member_group[3] = {3, 1, 0}, means:
+        /// if group0 get a partition, it should be assigned to (3 + 1) % 4 + 0 = 0
+        /// if group1 get a partition, it should be assigned to (1 + 1) % 3 + 0 = 2, and so on.
+        int next_in_member_group[recount_member];
+        memset(next_in_member_group, -1, sizeof(next_in_member_group));
 
         for (int partition = 0; partition < eligible_topic->metadata->partition_cnt; partition++)
         {
+            next = (next + 1) % recount_member;
+            next_in_member_group[next] = (next_in_member_group[next] + 1) % sizeof_member_group[next];
 
+            /// we create a mapping relationship from position in memeber group to real member ID, for example:
+            /// group0: 0, 1, 2, 3 --> 0, 1, 2, 3
+            /// group1: 0, 1, 2 --> 4, 5, 6
+            /// group2: 0, 1 --> 7, 8
+            rd_kafka_group_member_t *rkgm = &members[next_in_member_group[next] + non_duplicate_members_pos[next] + 1];
+
+            rd_kafka_dbg(rk, CGRP, "ASSIGN",
+                         "doubleroundrobin: Member \"%s\": "
+                         "assigned topic %s partition %d",
+                         rkgm->rkgm_member_id->str,
+                         eligible_topic->metadata->topic,
+                         partition);
+
+            rd_kafka_topic_partition_list_add(
+                rkgm->rkgm_assignment,
+                eligible_topic->metadata->topic, partition);
         }
 
     }
-    printf("robin: eligible topic: %zu\n member id :%s \n", eligible_topic_cnt, member_id);
-
     return 0;
 }
 
