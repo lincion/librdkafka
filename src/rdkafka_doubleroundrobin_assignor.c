@@ -25,6 +25,7 @@
 * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 * POSSIBILITY OF SUCH DAMAGE.
 */
+
 #include "rdkafka_int.h"
 #include "rdkafka_assignor.h"
 
@@ -65,7 +66,6 @@ rd_kafka_doubleroundrobin_assignor_assign_cb (rd_kafka_t *rk,
     for (ti = 0 ; ti < eligible_topic_cnt ; ti++)
     {
         rd_kafka_assignor_topic_t * eligible_topic = eligible_topics[ti];
-        int recount_member = 1;
 
         /* For each topic, we lay out the available partitions in
             * numeric order and the consumers in lexicographic order. */
@@ -73,17 +73,34 @@ rd_kafka_doubleroundrobin_assignor_assign_cb (rd_kafka_t *rk,
               rd_kafka_group_member_cmp);
 
         int member_cnt = rd_list_cnt(&eligible_topic->members);
-        int non_duplicate_members_pos[member_cnt + 1];
-        non_duplicate_members_pos[0] = -1;
+
+        /// Save right boundary of different consumer.
+        int different_consumers[member_cnt + 1];
+        int recount_member = 1;
+        different_consumers[0] = -1;
+
+        /// Save members after deleted replica members.
+        int resorted_member_lists[member_cnt + 1];
+        int resorted_member_lists_pos = 0;
 
         for (int i = 0; i < member_cnt - 1; ++i)
         {
-            if (rd_kafka_str_member_is_replicate(members[i].rkgm_member_id->str, members[i + 1].rkgm_member_id->str) == 1)
-                rd_kafka_dbg(rk, CGRP, "ASSIGN", "current member %s is duplicate.", members[i + 1].rkgm_member_id->str);
-            else
-                non_duplicate_members_pos[recount_member++] = i;
+            int status = rd_kafka_str_member_is_replicate(members[i].rkgm_member_id->str, members[i + 1].rkgm_member_id->str);
+            switch (status)
+            {
+                case 0:
+                    different_consumers[recount_member++] = resorted_member_lists_pos;
+                    resorted_member_lists[resorted_member_lists_pos++] = i;
+                    break;
+                case 1:
+                    resorted_member_lists[resorted_member_lists_pos++] = i;
+                    break;
+                case 2:
+                    break;
+            }
         }
-        non_duplicate_members_pos[recount_member] = member_cnt - 1;
+        different_consumers[recount_member] = resorted_member_lists_pos;
+        resorted_member_lists[resorted_member_lists_pos++] = member_cnt - 1;
 
         int next = -1;
 
@@ -95,7 +112,7 @@ rd_kafka_doubleroundrobin_assignor_assign_cb (rd_kafka_t *rk,
         int sizeof_member_group[recount_member];
         for (int group_id = 0; group_id < recount_member; ++group_id)
         {
-            sizeof_member_group[group_id] = non_duplicate_members_pos[group_id + 1] - non_duplicate_members_pos[group_id];
+            sizeof_member_group[group_id] = different_consumers[group_id + 1] - different_consumers[group_id];
         }
 
         /// This array saves status in every consumer's attribution, for example:
@@ -110,11 +127,11 @@ rd_kafka_doubleroundrobin_assignor_assign_cb (rd_kafka_t *rk,
             next = (next + 1) % recount_member;
             next_in_member_group[next] = (next_in_member_group[next] + 1) % sizeof_member_group[next];
 
-            /// we create a mapping relationship from position in memeber group to real member ID, for example:
+            /// we create a mapping relationship from position in member group to real member ID, for example:
             /// group0: 0, 1, 2, 3 --> 0, 1, 2, 3
             /// group1: 0, 1, 2 --> 4, 5, 6
             /// group2: 0, 1 --> 7, 8
-            rd_kafka_group_member_t *rkgm = &members[next_in_member_group[next] + non_duplicate_members_pos[next] + 1];
+            rd_kafka_group_member_t *rkgm = &members[resorted_member_lists[different_consumers[next] + 1 + next_in_member_group[next]]];
 
             rd_kafka_dbg(rk, CGRP, "ASSIGN",
                          "doubleroundrobin: Member \"%s\": "
@@ -127,7 +144,6 @@ rd_kafka_doubleroundrobin_assignor_assign_cb (rd_kafka_t *rk,
                 rkgm->rkgm_assignment,
                 eligible_topic->metadata->topic, partition);
         }
-
     }
     return 0;
 }

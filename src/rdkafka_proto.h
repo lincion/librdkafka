@@ -364,26 +364,32 @@ static RD_INLINE RD_UNUSED int rd_kafkap_str_cmp_str2 (const char *str,
 
 static RD_INLINE RD_UNUSED int
 rd_kafka_str_member_is_replicate (const char *str1, const char *str2){
-        int len1 = (int)strlen(str1);
-        int len2 = (int)strlen(str2);
-        // Because member ID is consist of clientID + UUID(static length: 37), so needn't compare with the UUID.
-        int minlen = RD_MIN(len1, len2) - 37;
+        int len = (int)strlen(str1);
         int count_underline = 0;
-        int count_minus = 0;
-        for(int i = 0; i < minlen; i++)
+
+        /// clientID consists of:
+        /// 'Snowball'-[hostName + '_' + clientID + '_' + replicaID]-databaseName-tableName-memberUUID
+        /// We return 3 kinds of relation ship, only discuss content in []:
+        /// [1] A: test1_1_1 B: test1_1_2
+        /// return 2: A and B are same client in same host test1, means only one of them can get partitions.
+        /// [2] A: test1_1_1 B: test1_2_1
+        /// return 1: A and B are different clients in same host test1.
+        /// [3] A: test1_1_1 B: test2_1_1
+        /// return 0: A and B are in different consumers.
+        for(int i = 0; i < len; i++)
         {
                 if(str1[i] != str2[i])
                 {
-                        if (count_underline == 1 && count_minus == 3)
+                        if (count_underline == 1)
                                 return 1;
+                        else if (count_underline == 2)
+                                return 2;
                         break;
                 }
                 else
                 {
                         if (str1[i] == '_')
                                 ++count_underline;
-                        if (str1[i] == '-')
-                                ++count_minus;
                 }
         }
         return 0;
